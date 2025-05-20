@@ -1,102 +1,74 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
+import { anthropic } from '@ai-sdk/anthropic';
 
-interface GeocodingResponse {
-  results: {
-    latitude: number;
-    longitude: number;
-    name: string;
-  }[];
-}
-interface WeatherResponse {
-  current: {
-    time: string;
-    temperature_2m: number;
-    apparent_temperature: number;
-    relative_humidity_2m: number;
-    wind_speed_10m: number;
-    wind_gusts_10m: number;
-    weather_code: number;
-  };
+interface JobDescriptionResponse {
+  title: string;
+  overview: string;
+  responsibilities: string[];
+  requirements: string[];
+  benefits: string[];
+  location: string;
+  employmentType: string;
 }
 
-export const weatherTool = createTool({
-  id: 'get-weather',
-  description: 'Get current weather for a location',
+export const jdTool = createTool({
+  id: 'generate-job-description',
+  description: 'Generate a comprehensive job description',
   inputSchema: z.object({
-    location: z.string().describe('City name'),
+    jobTitle: z.string().describe('The title of the position'),
+    company: z.string().describe('The company name'),
+    location: z.string().describe('Job location'),
+    employmentType: z.string().describe('Type of employment (e.g., Full-time, Part-time, Contract)'),
+    keyResponsibilities: z.array(z.string()).optional().describe('Key responsibilities for the role'),
+    requiredSkills: z.array(z.string()).optional().describe('Required skills and qualifications'),
+    preferredSkills: z.array(z.string()).optional().describe('Preferred skills and qualifications'),
+    benefits: z.array(z.string()).optional().describe('Company benefits to include'),
   }),
   outputSchema: z.object({
-    temperature: z.number(),
-    feelsLike: z.number(),
-    humidity: z.number(),
-    windSpeed: z.number(),
-    windGust: z.number(),
-    conditions: z.string(),
+    title: z.string(),
+    overview: z.string(),
+    responsibilities: z.array(z.string()),
+    requirements: z.array(z.string()),
+    benefits: z.array(z.string()),
     location: z.string(),
+    employmentType: z.string(),
   }),
   execute: async ({ context }) => {
-    return await getWeather(context.location);
+    const prompt = `Create a professional job description for the following position:
+
+Title: ${context.jobTitle}
+Company: ${context.company}
+Location: ${context.location}
+Employment Type: ${context.employmentType}
+${context.keyResponsibilities ? `Key Responsibilities:\n${context.keyResponsibilities.join('\n')}` : ''}
+${context.requiredSkills ? `Required Skills:\n${context.requiredSkills.join('\n')}` : ''}
+${context.preferredSkills ? `Preferred Skills:\n${context.preferredSkills.join('\n')}` : ''}
+${context.benefits ? `Benefits:\n${context.benefits.join('\n')}` : ''}
+
+Please structure the response as a JSON object with the following fields:
+- title: The job title
+- overview: A brief overview of the role
+- responsibilities: Array of key responsibilities
+- requirements: Array of required qualifications and skills
+- benefits: Array of benefits
+- location: The job location
+- employmentType: The type of employment
+
+Make the description professional, clear, and engaging. Use inclusive language and avoid discriminatory terms.`;
+
+    const model = anthropic('claude-3-5-sonnet-20241022');
+    const response = await model.doGenerate({
+      inputFormat: 'messages',
+      mode: { type: 'regular' },
+      prompt: [{ role: 'user', content: [{ type: 'text', text: prompt }] }]
+    });
+
+    try {
+      const jobDescription = JSON.parse(response.text || '') as JobDescriptionResponse;
+      return jobDescription;
+    } catch (error) {
+      throw new Error('Failed to parse job description response');
+    }
   },
 });
-
-const getWeather = async (location: string) => {
-  const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`;
-  const geocodingResponse = await fetch(geocodingUrl);
-  const geocodingData = (await geocodingResponse.json()) as GeocodingResponse;
-
-  if (!geocodingData.results?.[0]) {
-    throw new Error(`Location '${location}' not found`);
-  }
-
-  const { latitude, longitude, name } = geocodingData.results[0];
-
-  const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_gusts_10m,weather_code`;
-
-  const response = await fetch(weatherUrl);
-  const data = (await response.json()) as WeatherResponse;
-
-  return {
-    temperature: data.current.temperature_2m,
-    feelsLike: data.current.apparent_temperature,
-    humidity: data.current.relative_humidity_2m,
-    windSpeed: data.current.wind_speed_10m,
-    windGust: data.current.wind_gusts_10m,
-    conditions: getWeatherCondition(data.current.weather_code),
-    location: name,
-  };
-};
-
-function getWeatherCondition(code: number): string {
-  const conditions: Record<number, string> = {
-    0: 'Clear sky',
-    1: 'Mainly clear',
-    2: 'Partly cloudy',
-    3: 'Overcast',
-    45: 'Foggy',
-    48: 'Depositing rime fog',
-    51: 'Light drizzle',
-    53: 'Moderate drizzle',
-    55: 'Dense drizzle',
-    56: 'Light freezing drizzle',
-    57: 'Dense freezing drizzle',
-    61: 'Slight rain',
-    63: 'Moderate rain',
-    65: 'Heavy rain',
-    66: 'Light freezing rain',
-    67: 'Heavy freezing rain',
-    71: 'Slight snow fall',
-    73: 'Moderate snow fall',
-    75: 'Heavy snow fall',
-    77: 'Snow grains',
-    80: 'Slight rain showers',
-    81: 'Moderate rain showers',
-    82: 'Violent rain showers',
-    85: 'Slight snow showers',
-    86: 'Heavy snow showers',
-    95: 'Thunderstorm',
-    96: 'Thunderstorm with slight hail',
-    99: 'Thunderstorm with heavy hail',
-  };
-  return conditions[code] || 'Unknown';
-}
